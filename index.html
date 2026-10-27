@@ -1,0 +1,400 @@
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>MEGAPHONE VOICE</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: #101010;
+    color: #f4f0e8; font-family: -apple-system, sans-serif;
+    display: grid; place-items: center; padding: 24px;
+  }
+  main { width: 100%; max-width: 420px; text-align: center; }
+  h1 { font-size: 25px; letter-spacing: .13em; }
+  p { color: #aaa; font-size: 14px; line-height: 1.8; }
+  button {
+    width: 100%; border: 1px solid #777; border-radius: 14px;
+    padding: 17px; background: #222; color: white;
+    font-size: 16px; margin-top: 12px; touch-action: manipulation;
+  }
+  button:disabled { opacity: .4; }
+  #voice { background: #f0ede5; color: #111; font-weight: 700; }
+  #voice.active { background: #ff633e; color: white; }
+  #status { margin-top: 20px; color: #ff9b78; }
+  small { color: #888; display: block; line-height: 1.8; margin-top: 18px; }
+  #cameraArea {
+  position: relative;
+  width: 100%;
+  margin-top: 14px;
+}
+
+#camera {
+  display: none;
+  width: 100%;
+  max-width: 100%;
+  border-radius: 14px;
+
+  /* 最初から鏡表示 */
+  transform: scaleX(-1);
+}
+
+#camera.no-mirror {
+  transform: scaleX(1);
+}
+
+#megaphoneIcon {
+  display: none;
+  position: absolute;
+  right: 24px;
+  bottom: 24px;
+  font-size: 64px;
+  z-index: 10;
+  filter: drop-shadow(0 4px 12px rgba(0,0,0,.5));
+}
+
+#cameraArea:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  background: #000;
+}
+
+#cameraArea:fullscreen #camera {
+  display: block !important;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  object-fit: cover;
+  border-radius: 0;
+}
+
+#cameraArea:fullscreen #megaphoneIcon {
+  right: 30px;
+  bottom: 30px;
+}
+</style>
+</head>
+<body>
+<main>
+  <h1>MEGAPHONE VOICE</h1>
+  <p>声を入れて、手動でメガホンボイスに切り替えよう。</p>
+
+  <button id="start">① マイクを起動</button>
+  <button id="voice" disabled>② 押している間だけ加工！</button>
+  <div id="status">READY</div>
+  <button id="cameraStart">③ カメラで手を認識</button>
+<button id="mirrorBtn">↔ 左右反転</button>
+<button id="fullscreenBtn">⛶ 全画面表示</button>
+
+<div id="cameraArea">
+  <video id="camera" autoplay playsinline muted></video>
+  <div id="megaphoneIcon">📣</div>
+</div>
+
+  <small>
+    最初はイヤホン推奨。音量は小さめから。<br>
+    マイク使用中は、周囲の音も入力されます。
+  </small>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const startBtn = $("start");
+const voiceBtn = $("voice");
+const statusText = $("status");
+
+let audioContext;
+let micStream;
+let effectOn = false;
+
+function setEffect(on) {
+  effectOn = on;
+  if (!audioContext) return;
+
+  const now = audioContext.currentTime;
+  dry.gain.setTargetAtTime(on ? 0 : 1, now, 0.025);
+  wet.gain.setTargetAtTime(on ? 1 : 0, now, 0.025);
+
+  voiceBtn.classList.toggle("active", on);
+  voiceBtn.textContent = on
+    ? "加工中！ 離すと通常ボイス"
+    : "② 押している間だけ加工！";
+  statusText.textContent = on
+    ? "MEGAPHONE MODE"
+    : "NORMAL VOICE";
+}
+
+
+window.setEffect = setEffect;
+
+
+let dry, wet;
+
+startBtn.addEventListener("click", async () => {
+  startBtn.disabled = true;
+  statusText.textContent = "マイクを起動中…";
+
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false
+      }
+    });
+
+    audioContext = new (window.AudioContext ||
+                        window.webkitAudioContext)();
+    await audioContext.resume();
+
+    const mic = audioContext.createMediaStreamSource(micStream);
+
+    // 通常ボイス
+    dry = audioContext.createGain();
+    dry.gain.value = 1;
+    mic.connect(dry);
+    dry.connect(audioContext.destination);
+
+    // メガホン風の加工チェーン
+    const highpass = audioContext.createBiquadFilter();
+highpass.type = "highpass";
+highpass.frequency.value = 500;
+highpass.Q.value = 0.7;
+
+const mid = audioContext.createBiquadFilter();
+mid.type = "peaking";
+mid.frequency.value = 1700;
+mid.Q.value = 1.2;
+mid.gain.value = 10;
+
+const presence = audioContext.createBiquadFilter();
+presence.type = "peaking";
+presence.frequency.value = 2600;
+presence.Q.value = 1.5;
+presence.gain.value = 6;
+
+const lowpass = audioContext.createBiquadFilter();
+lowpass.type = "lowpass";
+lowpass.frequency.value = 3600;
+lowpass.Q.value = 0.8;
+
+    const distortion = audioContext.createWaveShaper();
+    const curve = new Float32Array(44100);
+    for (let i = 0; i < curve.length; i++) {
+      const x = i * 2 / (curve.length - 1) - 1;
+      curve[i] = Math.tanh(7 * x) / Math.tanh(7);
+    }
+    distortion.curve = curve;
+    distortion.oversample = "4x";
+
+    const delay = audioContext.createDelay();
+delay.delayTime.value = 0.07;
+
+const delayGain = audioContext.createGain();
+delayGain.gain.value = 0.3;
+
+    const compressor = audioContext.createDynamicsCompressor();
+    compressor.threshold.value = -28;
+    compressor.knee.value = 10;
+    compressor.ratio.value = 10;
+    compressor.attack.value = 0.002;
+    compressor.release.value = 0.09;
+
+    wet = audioContext.createGain();
+    wet.gain.value = 0;
+
+    mic.connect(highpass);
+highpass.connect(mid);
+mid.connect(presence);
+presence.connect(lowpass);
+lowpass.connect(distortion);
+
+// メイン音
+distortion.connect(compressor);
+
+// 短いディレイ音
+distortion.connect(delay);
+delay.connect(delayGain);
+delayGain.connect(compressor);
+
+compressor.connect(wet);
+wet.connect(audioContext.destination);
+
+    voiceBtn.disabled = false;
+    startBtn.textContent = "マイク起動済み";
+    statusText.textContent = "READY — 声を出して試してね";
+  } catch (error) {
+    console.error(error);
+    statusText.textContent =
+      "起動できませんでした。HTTPSとマイクの許可を確認してね。";
+    startBtn.disabled = false;
+  }
+});
+
+// マウスでもタッチでも押している間だけ加工
+voiceBtn.addEventListener("pointerdown", e => {
+  e.preventDefault();
+  if (!audioContext) return;
+  voiceBtn.setPointerCapture(e.pointerId);
+  setEffect(true);
+});
+
+function releaseVoice() {
+  if (effectOn) setEffect(false);
+}
+voiceBtn.addEventListener("pointerup", releaseVoice);
+voiceBtn.addEventListener("pointercancel", releaseVoice);
+voiceBtn.addEventListener("lostpointercapture", releaseVoice);
+voiceBtn.addEventListener("contextmenu", e => e.preventDefault());
+</script>
+
+<script type="module">
+import {
+  FilesetResolver,
+  HandLandmarker
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm";
+
+const cameraButton = document.getElementById("cameraStart");
+const video = document.getElementById("camera");
+const status = document.getElementById("status");
+const mirrorBtn = document.getElementById("mirrorBtn");
+const fullscreenBtn = document.getElementById("fullscreenBtn");
+const cameraArea = document.getElementById("cameraArea");
+const megaphoneIcon = document.getElementById("megaphoneIcon");
+
+let mirrored = true;
+
+let handLandmarker;
+let cameraStream;
+let lastVideoTime = -1;
+
+mirrorBtn.addEventListener("click", () => {
+  mirrored = !mirrored;
+
+  video.classList.toggle("no-mirror", !mirrored);
+
+  mirrorBtn.textContent = mirrored
+    ? "↔ 左右反転 ON"
+    : "↔ 左右反転 OFF";
+});
+
+fullscreenBtn.addEventListener("click", async () => {
+  try {
+    if (!document.fullscreenElement) {
+      await cameraArea.requestFullscreen();
+      fullscreenBtn.textContent = "全画面を終了";
+    } else {
+      await document.exitFullscreen();
+      fullscreenBtn.textContent = "⛶ 全画面表示";
+    }
+  } catch (error) {
+    console.error(error);
+    status.textContent = "このブラウザでは全画面表示できませんでした";
+  }
+});
+
+document.addEventListener("fullscreenchange", () => {
+  fullscreenBtn.textContent = document.fullscreenElement
+    ? "全画面を終了"
+    : "⛶ 全画面表示";
+});
+
+cameraButton.addEventListener("click", async () => {
+  cameraButton.disabled = true;
+  status.textContent = "手の認識モデルを準備中…";
+
+  try {
+    const vision = await FilesetResolver.forVisionTasks(
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+    );
+
+    handLandmarker = await HandLandmarker.createFromOptions(
+      vision,
+      {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+        },
+        runningMode: "VIDEO",
+        numHands: 1
+      }
+    );
+
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        facingMode: "user",
+        width: { ideal: 640 },
+        height: { ideal: 480 }
+      }
+    });
+
+    video.srcObject = cameraStream;
+    video.style.display = "block";
+    await video.play();
+
+    status.textContent = "手をカメラに向けてね";
+    cameraButton.textContent = "カメラ認識中";
+    requestAnimationFrame(detectHand);
+  } catch (error) {
+    console.error(error);
+    status.textContent =
+      "カメラ認識に失敗。HTTPS・カメラ許可・通信を確認してね。";
+    cameraButton.disabled = false;
+  }
+});
+
+function detectHand() {
+  if (!handLandmarker || video.readyState < 2) {
+    requestAnimationFrame(detectHand);
+    return;
+  }
+
+  if (video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+
+    const result = handLandmarker.detectForVideo(
+      video, performance.now()
+    );
+
+    const hands = result.landmarks || [];
+
+    if (hands.length === 0) {
+  window.setEffect(false);
+  megaphoneIcon.style.display = "none";
+  status.textContent = "手が見つからないよ";
+} else {
+  const hand = hands[0];
+
+      // 人差し指・中指・薬指・小指の4本を判定
+      const pairs = [
+        [8, 6], [12, 10], [16, 14], [20, 18]
+      ];
+
+      let folded = 0;
+      for (const [tip, joint] of pairs) {
+        if (hand[tip].y > hand[joint].y) folded++;
+      }
+
+      // 4本のうち3本以上が曲がっていたら「握った」と判定
+      const fist = folded >= 3;
+      window.setEffect(fist);
+
+      megaphoneIcon.style.display = fist
+  ? "block"
+  : "none";
+
+status.textContent = fist
+  ? "✊ MEGAPHONE MODE"
+  : "✋ NORMAL VOICE";
+    }
+  }
+
+  requestAnimationFrame(detectHand);
+}
+</script>
+
+</body>
+</html>
